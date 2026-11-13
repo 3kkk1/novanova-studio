@@ -1,0 +1,61 @@
+name: Build Docker images
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/docker-build.yml
+
+permissions:
+  contents: read
+
+env:
+  # docker-compose.yml 用 :? 强制要求这两个运行期变量；这里只给配置插值用的占位值，不进入镜像。
+  APP_SECRET_KEY: ci-build-placeholder
+  FRONTEND_BASE_URL: http://127.0.0.1:5554
+  IMAGE_TAG: ci-${{ github.run_number }}
+  DOCKER_BUILDKIT: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          repository: 3kkk1/novanova-studio
+          ref: master
+
+      - name: Show toolchain
+        run: |
+          docker --version
+          docker compose version
+          docker buildx version
+
+      - name: Validate compose config
+        run: docker compose config --quiet && echo "compose config OK"
+
+      - name: Build web and server images
+        run: docker compose build --progress=plain
+
+      - name: Inspect images
+        run: |
+          docker image ls --no-trunc
+          docker image inspect "novanovastudio-server:${IMAGE_TAG}" --format 'server id={{.Id}} size={{.Size}} created={{.Created}}'
+          docker image inspect "novanovastudio-web:${IMAGE_TAG}" --format 'web id={{.Id}} size={{.Size}} created={{.Created}}'
+
+      - name: Export image tarballs
+        run: |
+          mkdir -p artifacts
+          docker save "novanovastudio-server:${IMAGE_TAG}" -o artifacts/novanovastudio-server.tar
+          docker save "novanovastudio-web:${IMAGE_TAG}" -o artifacts/novanovastudio-web.tar
+          ls -lh artifacts
+
+      - name: Upload image tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: novanovastudio-images-${{ github.run_number }}
+          path: artifacts/*.tar
+          retention-days: 3
+          if-no-files-found: error
