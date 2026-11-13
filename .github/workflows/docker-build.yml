@@ -1,61 +1,151 @@
-name: Build Docker images
+name: Publish multi-arch images
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Image tag (also used as NEXT_PUBLIC_APP_VERSION)
+        required: true
+        default: latest
   push:
+    branches: [master]
     paths:
       - .github/workflows/docker-build.yml
+      - server/Dockerfile
+      - server/pom.xml
+      - server/src/**
+      - web/Dockerfile
+      - web/package.json
+      - web/pnpm-lock.yaml
+      - web/src/**
+      - docs/**
 
 permissions:
   contents: read
+  packages: write
 
 env:
-  # docker-compose.yml 用 :? 强制要求这两个运行期变量；这里只给配置插值用的占位值，不进入镜像。
-  APP_SECRET_KEY: ci-build-placeholder
-  FRONTEND_BASE_URL: http://127.0.0.1:5554
-  IMAGE_TAG: ci-${{ github.run_number }}
-  DOCKER_BUILDKIT: "1"
+  TAG: ${{ inputs.tag || 'latest' }}
+  SERVER_IMAGE: ghcr.io/${{ github.repository_owner }}/novanovastudio-server
+  WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/novanovastudio-web
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          repository: 3kkk1/novanova-studio
-          ref: master
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Show toolchain
+      - name: Build server (${{ matrix.platform }})
         run: |
-          docker --version
-          docker compose version
-          docker buildx version
+          docker buildx build \
+            --platform "${{ matrix.platform }}" \
+            --file "$GITHUB_WORKSPACE/server/Dockerfile" \
+            --provenance=false --sbom=false \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --tag "$SERVER_IMAGE:$TAG-${{ matrix.arch }}" \
+            --push "$GITHUB_WORKSPACE/server"
 
-      - name: Validate compose config
-        run: docker compose config --quiet && echo "compose config OK"
-
-      - name: Build web and server images
-        run: docker compose build --progress=plain
-
-      - name: Inspect images
+      - name: Build web (${{ matrix.platform }})
         run: |
-          docker image ls --no-trunc
-          docker image inspect "novanovastudio-server:${IMAGE_TAG}" --format 'server id={{.Id}} size={{.Size}} created={{.Created}}'
-          docker image inspect "novanovastudio-web:${IMAGE_TAG}" --format 'web id={{.Id}} size={{.Size}} created={{.Created}}'
+          docker buildx build \
+            --platform "${{ matrix.platform }}" \
+            --file "$GITHUB_WORKSPACE/web/Dockerfile" \
+            --provenance=false --sbom=false \
+            --build-arg "NEXT_PUBLIC_SERVER_URL=" \
+            --build-arg "NEXT_PUBLIC_APP_VERSION=$TAG" \
+            --build-arg "NEXT_PUBLIC_CREDIT_STORE_URL=" \
+            --build-arg "NEXT_PUBLIC_ICP_RECORD_NUMBER=" \
+            --build-arg "NEXT_PUBLIC_GITHUB_URL=" \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --tag "$WEB_IMAGE:$TAG-${{ matrix.arch }}" \
+            --push "$GITHUB_WORKSPACE"
 
-      - name: Export image tarballs
-        run: |
-          mkdir -p artifacts
-          docker save "novanovastudio-server:${IMAGE_TAG}" -o artifacts/novanovastudio-server.tar
-          docker save "novanovastudio-web:${IMAGE_TAG}" -o artifacts/novanovastudio-web.tar
-          ls -lh artifacts
+  merge:
+    name: Create multi-arch manifest
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Upload image tarballs
-        uses: actions/upload-artifact@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          name: novanovastudio-images-${{ github.run_number }}
-          path: artifacts/*.tar
-          retention-days: 3
-          if-no-files-found: error
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge amd64 + arm64 into one tag
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "$SERVER_IMAGE:$TAG" \
+            "$SERVER_IMAGE:$TAG-amd64" \
+            "$SERVER_IMAGE:$TAG-arm64"
+          docker buildx imagetools create \
+            --tag "$WEB_IMAGE:$TAG" \
+            "$WEB_IMAGE:$TAG-amd64" \
+            "$WEB_IMAGE:$TAG-arm64"
+
+      - name: Verify both architectures are present
+        run: |
+          set -euo pipefail
+          for image in "$SERVER_IMAGE:$TAG" "$WEB_IMAGE:$TAG"; do
+            echo "=== $image ==="
+            docker buildx imagetools inspect "$image"
+            raw=$(docker buildx imagetools inspect --raw "$image")
+            echo "$raw" | grep -Eq '"architecture"[[:space:]]*:[[:space:]]*"amd64"' \
+              || { echo "::error::linux/amd64 missing from $image"; exit 1; }
+            echo "$raw" | grep -Eq '"architecture"[[:space:]]*:[[:space:]]*"arm64"' \
+              || { echo "::error::linux/arm64 missing from $image"; exit 1; }
+          done
+
+      - name: Make packages public so servers can pull anonymously
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for pkg in novanovastudio-server novanovastudio-web; do
+            if gh api --method PATCH -f visibility=public "/user/packages/container/$pkg" >/dev/null 2>&1; then
+              echo "$pkg is public"
+            else
+              echo "::warning::Set $pkg to Public manually (link below), or run docker login ghcr.io on the server"
+            fi
+          done
+
+      - name: Summary
+        run: |
+          {
+            echo "### Multi-arch images ready"
+            echo ""
+            echo "- \`$SERVER_IMAGE:$TAG\`"
+            echo "- \`$WEB_IMAGE:$TAG\`"
+            echo ""
+            echo "Both tags contain linux/amd64 + linux/arm64."
+            echo ""
+            echo "If \`docker pull\` is denied, change package visibility to Public:"
+            echo "https://github.com/users/${{ github.repository_owner }}/packages/container/novanovastudio-server/settings"
+            echo "https://github.com/users/${{ github.repository_owner }}/packages/container/novanovastudio-web/settings"
+          } >> "$GITHUB_STEP_SUMMARY"
