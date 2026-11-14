@@ -104,7 +104,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ${WEB_IMAGE_NAME:-novanovastudio-web}:${IMAGE_TAG:-latest}
+    image: ${WEB_IMAGE_NAME:-ghcr.io/3kkk1/novanovastudio-web}:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: web/Dockerfile
@@ -126,7 +126,7 @@ services:
     restart: unless-stopped
 
   server:
-    image: ${SERVER_IMAGE_NAME:-novanovastudio-server}:${IMAGE_TAG:-latest}
+    image: ${SERVER_IMAGE_NAME:-ghcr.io/3kkk1/novanovastudio-server}:${IMAGE_TAG:-latest}
     build:
       context: ./server
       dockerfile: Dockerfile
@@ -206,7 +206,8 @@ services:
       - "127.0.0.1:${SERVER_PORT:-8080}:8080"
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - ./server/config/prompts:/app/config/prompts:ro
+      # 已改为随 Server 镜像发布，保留此挂载配置供需要宿主机覆盖提示词时手动启用。
+      # - ./server/config/prompts:/app/config/prompts:ro
       - ./logs/server:/app/logs
     depends_on:
       postgres:
