@@ -19,6 +19,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+# 将系统提示词直接打包进镜像，部署时无需依赖宿主机提示词目录。
+COPY config/prompts /app/config/prompts
 COPY --from=builder /app/target/server-0.0.1-SNAPSHOT.jar /app/server.jar
 
 EXPOSE 8080
