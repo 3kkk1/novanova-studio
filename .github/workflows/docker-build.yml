@@ -14,6 +14,7 @@ on:
       - server/Dockerfile
       - server/pom.xml
       - server/src/**
+      - server/config/prompts/**
       - web/Dockerfile
       - web/package.json
       - web/pnpm-lock.yaml
