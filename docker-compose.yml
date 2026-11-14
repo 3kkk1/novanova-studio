@@ -68,41 +68,6 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # 生产环境复用现有宿主机 Nginx 网络和站点配置。
-  nginx:
-    profiles: ["production"]
-    image: nginx:1.27-alpine
-    container_name: ${NGINX_CONTAINER_NAME:-novanovastudio-pro-nginx}
-    network_mode: host
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - ${NGINX_CONFIG_DIRECTORY:-./nginx}:/etc/nginx/conf.d:ro
-      - ${NGINX_STATIC_DIRECTORY:-/usr/share/nginx/html}:/usr/share/nginx/html:ro
-      - ${NGINX_LOG_DIRECTORY:-./logs/nginx}:/var/log/nginx
-      - ${NGINX_SSL_DIRECTORY:-/etc/nginx/ssl}:/etc/nginx/ssl:ro
-    depends_on:
-      - web
-      - server
-    restart: unless-stopped
-
-  # 本地和新建环境使用 Compose 桥接网络及仓库内的 Nginx 代理配置。
-  nginx-local:
-    profiles: ["local"]
-    image: nginx:1.27-alpine
-    container_name: ${NGINX_LOCAL_CONTAINER_NAME:-novanovastudio-nginx}
-    ports:
-      - "127.0.0.1:${NGINX_PORT:-5554}:80"
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - ${NGINX_CONFIG_DIRECTORY:-./nginx}:/etc/nginx/conf.d:ro
-      - ${NGINX_STATIC_DIRECTORY:-./volume/nginx_static}:/usr/share/nginx/html:ro
-      - ${NGINX_LOG_DIRECTORY:-./logs/nginx}:/var/log/nginx
-      - ${NGINX_SSL_DIRECTORY:-./volume/nginx_ssl}:/etc/nginx/ssl:ro
-    depends_on:
-      - web
-      - server
-    restart: unless-stopped
-
   web:
     image: ${WEB_IMAGE_NAME:-ghcr.io/3kkk1/novanovastudio-web}:${IMAGE_TAG:-latest}
     build:
@@ -206,8 +171,8 @@ services:
       - "127.0.0.1:${SERVER_PORT:-8080}:8080"
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      # 已改为随 Server 镜像发布，保留此挂载配置供需要宿主机覆盖提示词时手动启用。
-      # - ./server/config/prompts:/app/config/prompts:ro
+      # 提示词目录挂载：可在宿主机/宝塔文件管理器中直接修改。
+      - ./server/config/prompts:/app/config/prompts:ro
       - ./logs/server:/app/logs
     depends_on:
       postgres:
